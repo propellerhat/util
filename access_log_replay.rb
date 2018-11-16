@@ -16,6 +16,7 @@ require 'pp'
 options = OpenStruct.new
 options.host = nil
 options.delay = 0
+options.ssl = false
 
 opt_parser = OptionParser.new do |opts|
   opts.banner = "Usage: #{ARGV[0]} [options]"
@@ -34,48 +35,62 @@ opt_parser = OptionParser.new do |opts|
     options.host = host
   end
 
-  opts.on("-s", "--ssl", "Use SSL.") do
-    options.ssl = true
-  end
-
   opts.on("-d", "--delay N", "Wait N seconds between requests.") do |n|
     options.delay = n.to_i
   end
 
 end
 
+opt_parser.parse!(ARGV)
+
 if options.host.nil?
   options.host = options.server.split(":").first
 end
 
 protocol = "http"
-protocol << "s" if options.ssl
 
 File.foreach(options.filename).with_index do |line,line_number|
+  puts "Processing line #{line_number}" if line_number % 1000 == 0
   # Parse the line and extract method, HTTP Code, params, etc.
   fields = line.split
-  method = fields[??]
-  path_and_params = fields[??]
-  return_code = fields[??]
+  method = fields[5]
+  path_and_params = fields[6]
+  return_code = fields[8]
 
   # skip if it's not a GET
   next unless method.include? "GET"
 
   # Build URI
-  uri = URI(protocol + "://" options.sever + path_and_params)
+  begin
+    uri = URI(protocol + "://" + options.server + path_and_params)
+  rescue
+    puts "!! Skipping request on line number #{line_number}. Bad URI."
+    puts "!! Offending URI: #{path_and_params}"
+    next
+  end
   
   # Send the request
   req = Net::HTTP::Get.new(uri, 'Host' => options.host)
 
-  if options.ssl
-    response = https(uri).request(req)
-  else
-    response = Net::HTTP.start(uri.hostname, uri.port) do |http|
-      http.request(req)
+  begin
+    if options.ssl
+      response = https(uri).request(req)
+    else
+      response = Net::HTTP.start(uri.hostname, uri.port) do |http|
+        http.request(req)
+      end
     end
+  rescue
+    puts "!! Skipping request on line number #{line_number}. Error in sending HTTP request. Previous request(s) might have cause a server error."
+    next
   end
 
-  pp response
+  puts "Request on line #{line_number} matches" unless /flag/.match(response.body).nil?
+  if response.code != return_code
+    puts "!! Request on line number #{line_number} has a different HTTP return code."
+    puts "!! Received #{response.code}, but log has #{return_code}"
+    puts "!! Request was #{path_and_params}"
+  end
   sleep(options.delay)
 end
 
